@@ -1,0 +1,212 @@
+---
+title: "Cihat Web Scraping"
+output: html_document
+---
+Bu çalışmada bir internet sitesindeki veriyi nasıl elde edip işleyebileceğimizi küçük bir uygulama ile görelim.
+
+###Kütüphaneler
+
+rvest kütüphanesi veri kazımak için kullanılır.
+
+```{r}
+library(tidyverse)
+library(magrittr)
+library(rvest) #HTML/XML
+library(stringr)
+library(DataExplorer)
+library(dplyr)
+```
+
+
+###Giriş
+
+```{r}
+url <- 'https://www.sahibinden.com/audi'
+```
+
+20'şer ilan görüntülenmesi yapılırken ilanları içeren 50 sayfa bulunmaktadır.
+Alt sayfalardan tek tek URL'lerinin nasıl adreslenebileceğini gösteren bir şablon vardır.?pagingoffset=n eklenmiş ana URL'dir.n incelenecek sayfanın numarasıdır.Burada kaç tane sayfa olduğu önemlidir.
+
+>Aşamalar:
+1.İncelenecek maksimum sayfa sayısı bulunur.
+2.İncelemeleri olusturan tüm alt sayfalar oluşturulur.
+3.Her bir sayfadan bilgiler kazınır.
+4.Bilgiler kapsamlı bir veri çerçevesinde birleştirilir.
+
+Web verilerine ulaşmak için 'rvest' kütüphanesine ihtiyaç olacaktır.rvest kütüphanesindeki read_html() fonksiyonu bir internet (web) sitesini XML nesnesine dönüştürür.read_html() fonksiyonu içerisine hedef URL girilir.Böylelikle internet sitesiyle bağlantı kurulur.
+
+```{r}
+html <- read_html(url)
+html
+```
+
+XML nesnesinden değerli bilgilerin alınması için node'lar kullanılır.html_nodes() fonksiyonu ile bu node'lara ulaşılır.Ardından etiketli olan verileri çıkarmak için de html_text() fonksiyonu node fonksiyonundan sonra kullanılır.
+Maksimum sayfa sayısını bulalım.İlanların kaynak koduna bakıp kaç tane sayfa olduğunu görelim.Zaten 50 sayfa görüntüleyebileceğimizi site bize vermiş.
+
+```{r}
+nodes <- html %>% html_nodes('.mtmdef') %>% html_text()
+nodes
+```
+
+nodes içerisinden sayıları çekelim.
+
+```{r}
+num_of_nodes <- regmatches(nodes, gregexpr("[[:digit:]]+", nodes))
+num_of_nodes <- as.numeric(unlist(num_of_nodes))
+num_of_nodes
+```
+
+Maksimum sayfa sayısı 50'dir.Yani sayfada ilan bulunmaktadır.
+
+Sayfa sayısı için ana node '.mtmdef' idi.Alt node'lara da aşağıdaki kodlarda bakılabilir.
+
+```{r}
+nodes_sub_1 <- html %>% html_nodes('.mtmdef') %>% html_text()
+nodes_sub_1
+```
+
+```{r}
+nodes_sub_2 <- html %>% html_nodes('.currentPage') %>% html_text()
+nodes_sub_2
+```
+
+```{r}
+max(num_of_nodes[c(-1,-2,-17,-18)])
+```
+
+Artık bu numaraya sahip olduğumuza göre, ilgili tüm URL'lerin bir listesini oluşturabiliriz.
+
+```{r}
+list_of_pages <- str_c(url, '?pagingoffset=', seq(0,980,20))
+list_of_pages <- if_else(
+  str_detect(list_of_pages, "pagingoffset=0") == TRUE,
+  "https://www.sahibinden.com/audi",
+  list_of_pages
+)
+list_of_pages
+```
+
+Bu şekilde tüm sayfaları yakalayabiliriz.
+
+###Veri Kazıma
+
+Tablonun ismi searchResultsTable olarak görülmektedir.
+html_table() fonksiyonu ile tabloyu kolaylıkla elde edebiliiz.
+
+```{r}
+ilanlar <- html %>% html_nodes("#searchResultsTable") %>% html_table(fill = TRUE)
+ilanlar <- as.data.frame(ilanlar)[-1]
+```
+
+```{r}
+head(ilanlar)
+```
+
+```{r}
+tail(ilanlar)
+```
+
+Burada yapmış olduğumuz işlem ile sadece 1.sayfadaki veri internet sitesinden çekilmiştir.Bu yüzden tüm veriyi elde etmek istediğimizde tüm sayfalarda işlem yapmamız gerekiyor.
+Tüm sayfalardan verileri çekmek için bir yardımcı fonksiyon oluşturulur.
+
+```{r}
+get_tables <- function(html_df){
+  as.data.frame( # Data Frame'e dönüştürme
+    read_html(html_df) %>% #URL'lerin okunması
+      html_nodes("#searchResultsTable") %>% # Verilerin ait olduğu node
+      html_table(fill=TRUE) # Veriler çekilir
+    )
+}
+```
+
+Ardından her bir sayfadan veriyi çekmek için map() fonksiyonu ile her bir elemana işlem yapılır ve ayrı ayrı veriler çekilir ve en snunda bind_rows() fonksiyonu ile tüm veriler birleştirilir.
+
+```{r}
+data <- list_of_pages %>%
+  map(get_tables) %>%
+  bind_rows()
+```
+Burda işlem biraz uzun sürüyor 1 dakikaya yakın.
+
+```{r}
+glimpse(data)
+```
+
+Görüldüğü üzere veriler elde edildi fakat verimiz düzensiz bir formatta bu veriyi düzenli hale getirelim.
+
+###Veri Manipülasyonu
+
+#Değişken İsimlendirme
+```{r}
+names(data)
+```
+
+```{r}
+names(data) <- data[1,]
+names(data)
+```
+
+Gereksiz değişkenler silinir ve verinin yapısına bakılır.
+
+```{r}
+data <- data[,c(-1,-11)]
+glimpse(data)
+```
+
+Tüm değişkenler karakter formatında olduğundan değişken dönüşümleri yapılmalıdır.
+
+#Veride Yanlış Bulunan Gözlemlerin Silinmesi
+```{r}
+data <- data[-which(data$Seri %in% c("Siz de ilanınızın yukarıda yer almasını istiyorsanız tıklayın.",NA,"","Seri")),]
+head(data)
+```
+
+#Değişkenlerin Düzenlenmesi
+```{r}
+data %<>% mutate(Fiyat = str_remove_all(data$Fiyat, "TL"),
+                 Yil = str_trim(str_sub(data$'İlan Tarihi', start = 34, end = 39), side = "both")) %>%
+  separate('İlan Tarihi', c("Gün","Ay", "yil2"), sep = " ") %>% select(-yil2) %>%
+  unite(Ilan_Tarihi, Gün, Ay, Yil, sep= " ")
+```
+
+#Değişken Dönüşümleri
+```{r}
+data %<>%
+  mutate_at(vars(c(KM,Fiyat)), funs(as.numeric)) %>%
+  mutate_if(is.character, as.factor)
+```
+
+Verinin son hali gibidir.
+
+```{r}
+glimpse(data)
+```
+
+#Veri Görselleştirme
+Fiyat değişkeninde sadece eksik gözlem bulunmaktadır.
+```{r}
+plot_missing(data)
+```
+
+Verilen ilanlardaki Audi arabalarının modellerinin dağılımı
+```{r}
+data %>%
+  ggplot(aes(Seri, fill = Seri))+
+  geom_bar(show.legend = FALSE)+
+  theme_minimal()+
+  scale_fill_ordinal()+
+  coord_flip()+
+  labs(y = "Frekans",
+       caption = "Kaynak: sahibinden.com")
+```
+
+```{r}
+data %>%
+  ggplot(aes(KM, Fiyat))+
+  geom_point(aes(color = KM))+
+  geom_smooth(se = FALSE, color = "red")
+  theme_minimal()+
+  labs(caption = "Kaynak: sahibinden.com")
+```
+
+Veri kazıma işlemi kısaca yapmış olduk.Veri kazıma öncesinde biraz HTML bilgisine sahip olmamız gerekiyor.Ardından rvest kütüphanesi ve diğer R paketleri ile hızlıca internet sitesinden verileri elde edebilmemiz mümkün.
